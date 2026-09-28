@@ -26,36 +26,58 @@ def find_catalog_file():
 
 def extract_added_wallpapers(catalog_path):
     """
-    Attempts to extract newly added wallpapers using git diff.
-    If git diff is unavailable or fails, falls back to the first wallpaper in the catalog.
+    Extracts newly added wallpapers by comparing current catalog with previous git commit (HEAD~1).
+    Wallpapers whose URL did not exist in HEAD~1 are the newly added ones.
     """
     added_wallpapers = []
+    
+    # Method 1: Compare HEAD~1 catalog JSON with current catalog (exact URL set difference)
     try:
-        # Check if there is a git commit history to diff against
+        old_content = subprocess.check_output(
+            ["git", "show", f"HEAD~1:{catalog_path}"],
+            text=True,
+            stderr=subprocess.DEVNULL
+        )
+        old_catalog = json.loads(old_content)
+        old_urls = {
+            w.get("url").strip() for w in old_catalog
+            if isinstance(w, dict) and w.get("url")
+        }
+        
+        with open(catalog_path, "r", encoding="utf-8") as f:
+            new_catalog = json.load(f)
+            
+        for item in new_catalog:
+            if isinstance(item, dict) and item.get("url"):
+                if item.get("url").strip() not in old_urls:
+                    added_wallpapers.append(item)
+                    
+        if added_wallpapers:
+            print(f"Detected {len(added_wallpapers)} new wallpaper(s) via URL comparison against HEAD~1.")
+            return added_wallpapers
+    except Exception as e:
+        print(f"git show HEAD~1 comparison unavailable ({e}), trying git diff...")
+
+    # Method 2: Git diff line check
+    try:
         diff_cmd = ["git", "diff", "HEAD~1", "HEAD", "--", catalog_path]
         diff_output = subprocess.check_output(diff_cmd, text=True, stderr=subprocess.DEVNULL)
-        
-        # Look for newly added lines in the diff
         added_lines = [line[1:].strip() for line in diff_output.splitlines() if line.startswith("+") and not line.startswith("+++")]
         diff_content = "\n".join(added_lines)
-        
-        # Try to parse newly added blocks
-        try:
-            with open(catalog_path, "r", encoding="utf-8") as f:
-                full_catalog = json.load(f)
-            
-            # Match wallpapers whose url appears in the added lines
-            for item in full_catalog:
-                url = item.get("url", "")
-                name = item.get("name", "")
-                if (url and url in diff_content) or (name and name in diff_content):
-                    added_wallpapers.append(item)
-        except Exception:
-            pass
+
+        with open(catalog_path, "r", encoding="utf-8") as f:
+            full_catalog = json.load(f)
+
+        for item in full_catalog:
+            url = item.get("url", "")
+            if url and url in diff_content:
+                added_wallpapers.append(item)
+        if added_wallpapers:
+            return added_wallpapers
     except Exception:
         pass
 
-    # Fallback if diff produced no matches: read the top of catalog
+    # Method 3: Fallback if no git history (e.g. fresh clone / initial commit)
     if not added_wallpapers:
         try:
             with open(catalog_path, "r", encoding="utf-8") as f:
